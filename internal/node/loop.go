@@ -30,7 +30,7 @@ func connectOnce(ctx context.Context, opts Options) (handed bool, err error) {
 			ProtocolVersion:     protocolVersion,
 			NodeId:              opts.NodeID,
 			Credential:          opts.Credential,
-			ExecutionProfileIds: slices.Clone(executionProfileIDs),
+			ExecutionProfileIds: slices.Clone(opts.ExecutionProfileIDs),
 			MaxSlots:            opts.MaxSlots,
 		}},
 	}); err != nil {

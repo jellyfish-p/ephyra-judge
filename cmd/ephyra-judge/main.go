@@ -19,6 +19,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	opts.ExecutionProfileIDs = attempt.ProfileIDs()
 	runner := attempt.New(sandbox.DefaultHost(), opts.WorkDir)
 	opts.Judge = runner.Run
 	if err := node.Run(ctx, opts); err != nil {

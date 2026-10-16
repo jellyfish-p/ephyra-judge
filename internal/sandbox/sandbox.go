@@ -21,16 +21,6 @@ type Limits struct {
 	OutputBytes int64
 }
 
-func (l Limits) WallOrDefault() time.Duration {
-	if l.Wall > 0 {
-		return l.Wall
-	}
-	if l.CPU <= 0 {
-		return 2 * time.Second
-	}
-	return l.CPU*3/2 + 100*time.Millisecond
-}
-
 type Spec struct {
 	Role    Role
 	Args    []string
@@ -86,9 +76,4 @@ func DefaultEnv() []string {
 		"LANG=C.UTF-8",
 		"LC_ALL=C.UTF-8",
 	}
-}
-
-func MergeEnv(extra []string) []string {
-	out := DefaultEnv()
-	return append(out, extra...)
 }

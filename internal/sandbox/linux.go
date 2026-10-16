@@ -24,11 +24,11 @@ func init() {
 	}
 }
 
-func DefaultHost() Host { return LinuxHost{} }
+func DefaultHost() Host { return linuxHost{} }
 
-type LinuxHost struct{}
+type linuxHost struct{}
 
-func (LinuxHost) NewSession(ctx context.Context) (Session, error) {
+func (linuxHost) NewSession(ctx context.Context) (Session, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -151,7 +151,7 @@ func execEnv(ctx context.Context, env container.Environment, spec Spec, stdio []
 	}
 	defer closeFDs()
 
-	wall := spec.Limits.WallOrDefault()
+	wall := wallOrDefault(spec.Limits)
 	runCtx, cancel := context.WithTimeout(ctx, wall)
 	defer cancel()
 
@@ -349,7 +349,17 @@ func cpuSeconds(d time.Duration) uint64 {
 	return sec
 }
 
+func wallOrDefault(l Limits) time.Duration {
+	if l.Wall > 0 {
+		return l.Wall
+	}
+	if l.CPU <= 0 {
+		return 2 * time.Second
+	}
+	return l.CPU*3/2 + 100*time.Millisecond
+}
+
 var (
-	_ Host    = LinuxHost{}
+	_ Host    = linuxHost{}
 	_ Session = (*linuxSession)(nil)
 )

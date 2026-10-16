@@ -158,6 +158,11 @@ func testOpts(t *testing.T, fake *fakeControl, judge JudgeFunc) Options {
 		Insecure:   true,
 		MaxSlots:   1,
 		Judge:      judge,
+		ExecutionProfileIDs: []string{
+			"cpp23.gcc.linux-amd64.v0",
+			"c17.gcc.linux-amd64.v0",
+			"c23.gcc.linux-amd64.v0",
+		},
 		dialer: func(ctx context.Context, _ string) (net.Conn, error) {
 			return lis.DialContext(ctx)
 		},
@@ -296,6 +301,22 @@ func TestFromEnvDefaults(t *testing.T) {
 	}
 	if opts.Credential != testCredential {
 		t.Fatal("credential not preserved")
+	}
+}
+
+func TestRunRequiresExecutionProfileIDs(t *testing.T) {
+	opts := Options{
+		Addr:       "127.0.0.1:1",
+		NodeID:     "node-1",
+		Credential: testCredential,
+		Judge:      func(context.Context, *judgev1.DispatchAttempt) *judgev1.AttemptResult { return nil },
+	}
+	err := Run(context.Background(), opts)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "execution profile") {
+		t.Fatalf("got %v", err)
 	}
 }
 

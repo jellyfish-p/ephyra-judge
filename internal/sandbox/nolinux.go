@@ -8,12 +8,12 @@ import (
 	"runtime"
 )
 
-func DefaultHost() Host { return UnavailableHost{} }
+func DefaultHost() Host { return unavailableHost{} }
 
-type UnavailableHost struct{}
+type unavailableHost struct{}
 
-func (UnavailableHost) NewSession(context.Context) (Session, error) {
+func (unavailableHost) NewSession(context.Context) (Session, error) {
 	return nil, fmt.Errorf("go-sandbox execution requires linux, not %s/%s", runtime.GOOS, runtime.GOARCH)
 }
 
-var _ Host = UnavailableHost{}
+var _ Host = unavailableHost{}

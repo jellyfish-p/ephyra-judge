@@ -32,12 +32,6 @@ const (
 	maxReconnectWait = 15 * time.Second
 )
 
-var executionProfileIDs = []string{
-	"cpp23.gcc.linux-amd64.v0",
-	"c17.gcc.linux-amd64.v0",
-	"c23.gcc.linux-amd64.v0",
-}
-
 // errHandshakeRejected is returned when the server refuses the node.
 var errHandshakeRejected = errors.New("handshake rejected")
 
@@ -54,6 +48,9 @@ type Options struct {
 	// attempt.Runner.Run; tests pass a stub. This package does not import
 	// internal/attempt.
 	Judge JudgeFunc
+	// ExecutionProfileIDs is advertised in the handshake. An empty list
+	// is an error; this package does not invent profile IDs.
+	ExecutionProfileIDs []string
 
 	// dialer is an internal seam for bufconn tests. Nil uses the default
 	// gRPC resolver against Addr.
@@ -159,6 +156,9 @@ func normalize(opts Options) (Options, error) {
 	}
 	if opts.Judge == nil {
 		return Options{}, fmt.Errorf("judge function is required")
+	}
+	if len(opts.ExecutionProfileIDs) == 0 {
+		return Options{}, fmt.Errorf("execution profile ids are required")
 	}
 	if opts.MaxSlots <= 0 {
 		opts.MaxSlots = defaultMaxSlots

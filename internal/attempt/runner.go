@@ -11,13 +11,13 @@ import (
 
 // Runner is the judging brain. Callers only see Run.
 type Runner struct {
-	Sandbox sandbox.Host
-	WorkDir string
-	HTTP    *http.Client // nil → http.DefaultClient
+	sandbox sandbox.Host
+	workDir string
+	http    *http.Client // nil → http.DefaultClient
 }
 
 func New(host sandbox.Host, workDir string) *Runner {
-	return &Runner{Sandbox: host, WorkDir: workDir}
+	return &Runner{sandbox: host, workDir: workDir}
 }
 
 // Run judges one dispatch. A cancelled or invalidated attempt returns nil
@@ -54,10 +54,10 @@ func (r *Runner) Run(ctx context.Context, d *judgev1.DispatchAttempt) *judgev1.A
 		return systemFault(d, kind)
 	}
 
-	if r.Sandbox == nil {
+	if r.sandbox == nil {
 		return systemFault(d, faultSandboxUnavailable)
 	}
-	sess, err := r.Sandbox.NewSession(ctx)
+	sess, err := r.sandbox.NewSession(ctx)
 	if ctx.Err() != nil {
 		return nil
 	}

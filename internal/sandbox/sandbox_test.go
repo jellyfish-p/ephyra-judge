@@ -4,41 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 )
-
-func TestWallOrDefault(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name string
-		in   Limits
-		want time.Duration
-	}{
-		{name: "explicit wall", in: Limits{Wall: 4 * time.Second, CPU: time.Second}, want: 4 * time.Second},
-		{name: "from cpu", in: Limits{CPU: 2 * time.Second}, want: 2*time.Second*3/2 + 100*time.Millisecond},
-		{name: "zero", in: Limits{}, want: 2 * time.Second},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			if got := tc.in.WallOrDefault(); got != tc.want {
-				t.Fatalf("WallOrDefault() = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestMergeEnv(t *testing.T) {
-	t.Parallel()
-	got := MergeEnv([]string{"FOO=bar"})
-	base := DefaultEnv()
-	if len(got) != len(base)+1 || got[len(got)-1] != "FOO=bar" {
-		t.Fatalf("MergeEnv = %v", got)
-	}
-	if got[0] != "PATH=/usr/local/bin:/usr/bin:/bin" {
-		t.Fatalf("default PATH missing: %v", got)
-	}
-}
 
 func TestStatusOKIsProcessEnded(t *testing.T) {
 	t.Parallel()
@@ -73,11 +39,11 @@ func TestFakeQueue(t *testing.T) {
 	}
 }
 
-func TestFakeScript(t *testing.T) {
+func TestFakeExecFn(t *testing.T) {
 	var seen Role
 	f := &Fake{
 		Queue: []Result{{Status: StatusMemoryLimit}},
-		Script: func(_ context.Context, spec Spec) Result {
+		ExecFn: func(_ context.Context, spec Spec) Result {
 			seen = spec.Role
 			return Result{Status: StatusRuntime, ExitCode: 139}
 		},
@@ -90,30 +56,13 @@ func TestFakeScript(t *testing.T) {
 
 	got := sess.Exec(context.Background(), Spec{Role: RoleCompile})
 	if got.Status != StatusRuntime || got.ExitCode != 139 {
-		t.Fatalf("script result = %+v", got)
+		t.Fatalf("ExecFn result = %+v", got)
 	}
 	if seen != RoleCompile {
-		t.Fatalf("script saw %q", seen)
+		t.Fatalf("ExecFn saw %q", seen)
 	}
 	if len(f.Queue) != 1 {
-		t.Fatalf("script should not consume queue, left %d", len(f.Queue))
-	}
-}
-
-func TestFakeExecFnAlias(t *testing.T) {
-	f := &Fake{
-		ExecFn: func(context.Context, Spec) Result {
-			return Result{Status: StatusOutputLimit}
-		},
-	}
-	sess, err := f.NewSession(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
-	got := sess.Exec(context.Background(), Spec{})
-	if got.Status != StatusOutputLimit {
-		t.Fatalf("ExecFn result = %+v", got)
+		t.Fatalf("ExecFn should not consume queue, left %d", len(f.Queue))
 	}
 }
 

@@ -15,8 +15,8 @@ import (
 )
 
 func (r *Runner) client() *http.Client {
-	if r.HTTP != nil {
-		return r.HTTP
+	if r.http != nil {
+		return r.http
 	}
 	return http.DefaultClient
 }
@@ -51,7 +51,7 @@ func (r *Runner) fetch(ctx context.Context, ref *judgev1.FileRef) ([]byte, strin
 	if !validSHA256Hex(claimed) {
 		return nil, faultHashMismatch
 	}
-	cachePath := filepath.Join(r.WorkDir, "objects", strings.ToLower(claimed))
+	cachePath := filepath.Join(r.workDir, "objects", strings.ToLower(claimed))
 	if cached, err := os.ReadFile(cachePath); err == nil {
 		if kind := verifyBlob(cached, ref); kind == "" {
 			return cached, ""

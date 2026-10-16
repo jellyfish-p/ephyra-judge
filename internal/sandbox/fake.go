@@ -8,11 +8,10 @@ import (
 // Fake is a host for tests. It never executes untrusted code.
 type Fake struct {
 	mu         sync.Mutex
-	Script     func(ctx context.Context, spec Spec) Result
 	ExecFn     func(ctx context.Context, spec Spec) Result
 	PairFn     func(ctx context.Context, user, peer Spec) (Result, Result)
 	Queue      []Result
-	Calls      []Spec
+	calls      []Spec
 	NewErr     error
 	SessionErr error
 }
@@ -30,8 +29,8 @@ type fakeSession struct {
 
 func (s *fakeSession) Exec(ctx context.Context, spec Spec) Result {
 	s.host.mu.Lock()
-	s.host.Calls = append(s.host.Calls, spec)
-	fn := s.host.script()
+	s.host.calls = append(s.host.calls, spec)
+	fn := s.host.ExecFn
 	var next *Result
 	if fn == nil && len(s.host.Queue) > 0 {
 		r := s.host.Queue[0]
@@ -54,7 +53,7 @@ func (s *fakeSession) ExecPair(ctx context.Context, user, peer Spec) (Result, Re
 	s.host.mu.Unlock()
 	if fn != nil {
 		s.host.mu.Lock()
-		s.host.Calls = append(s.host.Calls, user, peer)
+		s.host.calls = append(s.host.calls, user, peer)
 		s.host.mu.Unlock()
 		return fn(ctx, user, peer)
 	}
@@ -67,18 +66,11 @@ func (s *fakeSession) Close() error {
 	return s.host.SessionErr
 }
 
-func (f *Fake) script() func(context.Context, Spec) Result {
-	if f.Script != nil {
-		return f.Script
-	}
-	return f.ExecFn
-}
-
 func (f *Fake) PopCalls() []Spec {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := append([]Spec(nil), f.Calls...)
-	f.Calls = nil
+	out := append([]Spec(nil), f.calls...)
+	f.calls = nil
 	return out
 }
 

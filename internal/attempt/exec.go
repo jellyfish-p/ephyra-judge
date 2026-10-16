@@ -13,7 +13,7 @@ import (
 )
 
 func (r *Runner) compileCached(ctx context.Context, sess sandbox.Session, profileID, sourceSHA string, args []string, files map[string][]byte, outName string) (bin []byte, compilerFailed bool, faultKind string) {
-	cachePath := filepath.Join(r.WorkDir, "compile", profileID+"-"+sourceSHA)
+	cachePath := filepath.Join(r.workDir, "compile", profileID+"-"+sourceSHA)
 	if cached, err := os.ReadFile(cachePath); err == nil && len(cached) > 0 {
 		return cached, false, ""
 	}

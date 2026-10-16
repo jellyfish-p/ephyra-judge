@@ -13,8 +13,31 @@ import (
 
 func TestDefaultHostLinux(t *testing.T) {
 	h := DefaultHost()
-	if _, ok := h.(LinuxHost); !ok {
-		t.Fatalf("DefaultHost() = %T, want LinuxHost", h)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := h.NewSession(ctx); err == nil {
+		t.Fatal("NewSession on cancelled context: want error")
+	}
+}
+
+func TestWallOrDefault(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   Limits
+		want time.Duration
+	}{
+		{name: "explicit wall", in: Limits{Wall: 4 * time.Second, CPU: time.Second}, want: 4 * time.Second},
+		{name: "from cpu", in: Limits{CPU: 2 * time.Second}, want: 2*time.Second*3/2 + 100*time.Millisecond},
+		{name: "zero", in: Limits{}, want: 2 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := wallOrDefault(tc.in); got != tc.want {
+				t.Fatalf("wallOrDefault() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

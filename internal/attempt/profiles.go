@@ -13,6 +13,11 @@ type profile struct {
 	compileArgs, runArgs       []string
 }
 
+// ProfileIDs returns the execution profile IDs lookupProfile knows.
+func ProfileIDs() []string {
+	return []string{profileCPP23, profileC17, profileC23}
+}
+
 func lookupProfile(id string) (profile, bool) {
 	switch id {
 	case profileCPP23:
