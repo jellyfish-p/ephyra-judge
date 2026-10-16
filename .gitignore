@@ -1,0 +1,9 @@
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+.idea/
+.vscode/
+*.log
+/testdata/tmp/

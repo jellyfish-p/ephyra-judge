@@ -1,0 +1,20 @@
+ephyra-judge
+Copyright (c) 2026 jellyfish
+
+This program is original work licensed under the MIT License (see LICENSE).
+It implements Ephyra's own judge-control protocol and does not include
+Hydro / hydrojudge source.
+
+Third-party notices
+-------------------
+
+go-sandbox
+https://github.com/criyle/go-sandbox
+License: MIT
+Used as a Linux isolation library (namespaces, rlimit, preforked container).
+Ephyra owns compile/check/score orchestration; go-sandbox does not decide
+accepted / wrong_answer. Isolation effectiveness is not claimed until a
+recorded Linux host validation exists.
+
+gRPC, protobuf, and other Go module licenses appear in their respective
+module trees via `go.mod`.
