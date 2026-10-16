@@ -11,12 +11,24 @@ not copy `.proto` files.
 
 ## What this node does
 
-- Handshake with protocol version `1` and the v0 execution profile IDs
+- Handshake with protocol version `1` and only the execution profiles that
+  passed a local gcc/g++ self-check
+- Persist attempt identity, phase, and pending results under `WORKDIR/ledger`
+  so a stream drop does not cancel work or re-run a finished attempt
+- Retransmit persisted results after reconnect; a process restart that finds a
+  still-running record reports `system_fault` / `uncertain_restart` instead of
+  guessing a rerun
 - Heartbeat on its own goroutine so a running program cannot stall the lease
-- SHA-256 + size checks on every `FileRef`
+- SHA-256 + size checks on every `FileRef`, with a per-download timeout and a
+  task-level data budget
 - Compile argv comes from local profiles, never from the task
+- Compile cache identity includes role, filenames, flags, and source hashes;
+  writes are temp-file plus rename
 - Batch: exact / token compare, or a sandboxed testlib checker
-- Interactive: user and interactor in separate containers, connected by pipes
+- Interactive: user and interactor in separate containers; pipe write ends are
+  closed once both processes have started so the peer can see EOF
+- Linux sessions install a seccomp allowlist and, when cgroup is available,
+  task-level memory / PID / CPU-usage limits
 - All-or-nothing subtask scores as decimal strings; the server recomputes and
   rejects a contradictory summary
 - Checker / interactor crashes are `system_fault`, not `wrong_answer`
@@ -37,8 +49,14 @@ not copy `.proto` files.
 | `c17.gcc.linux-amd64.v0` | c17 | `gcc -std=c17 -O2 -pipe` |
 | `c23.gcc.linux-amd64.v0` | c23 | `gcc -std=c23 -O2 -pipe` |
 
-These IDs are placeholders until a toolchain release is locked on a recorded
-Linux image.
+The node advertises an ID only after `gcc`/`g++` accepts that `-std` flag on a
+trivial translation unit. Checker and interactor compiles also need pinned
+`testlib.h` (image default `/usr/include/testlib.h`, override with
+`EPHYRA_JUDGE_TESTLIB`, or ship `testlib.h` in the problem data).
+
+`normalized_config_json` is version `1`. The shared sample is
+`internal/attempt/testdata/normalized_config_v1.json` in this repo and
+`protocol/testdata/normalized_config_v1.json` in Ephyra; keep them identical.
 
 ## Run
 
@@ -50,6 +68,7 @@ EPHYRA_JUDGE_NODE_ID=<uuid>
 EPHYRA_JUDGE_CREDENTIAL=<secret>
 EPHYRA_JUDGE_WORKDIR=/var/lib/ephyra-judge
 EPHYRA_JUDGE_MAX_SLOTS=1
+EPHYRA_JUDGE_TESTLIB=/usr/include/testlib.h
 ```
 
 Local development against an insecure gRPC listener:

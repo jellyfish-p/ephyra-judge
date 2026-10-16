@@ -7,7 +7,10 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -188,7 +191,7 @@ func TestRunnerRun(t *testing.T) {
 			if tc.ctx != nil {
 				ctx = tc.ctx()
 			}
-			r := New(fake, t.TempDir())
+			r := testRunner(t, fake)
 			got := r.Run(ctx, d)
 			if tc.wantNil {
 				if got != nil {
@@ -204,6 +207,21 @@ func TestRunnerRun(t *testing.T) {
 			}
 			tc.check(t, got, fake)
 		})
+	}
+}
+
+func testRunner(t *testing.T, host sandbox.Host) *Runner {
+	t.Helper()
+	dir := t.TempDir()
+	hdr := filepath.Join(dir, "testlib.h")
+	if err := os.WriteFile(hdr, []byte("// dummy testlib\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return &Runner{
+		sandbox:     host,
+		workDir:     dir,
+		http:        &http.Client{Timeout: downloadTimeout},
+		testlibPath: hdr,
 	}
 }
 
@@ -507,4 +525,104 @@ func assertCompileUsesLocalProfile(t *testing.T, fake *sandbox.Fake) {
 		return
 	}
 	t.Fatal("expected a compile Exec")
+}
+
+func TestCompileCacheSeparatesUserAndChecker(t *testing.T) {
+	t.Parallel()
+	var compiles atomic.Int32
+	files := map[string][]byte{
+		"main.cpp": []byte(srcMain),
+		"chk.cpp":  []byte(srcMain),
+		"1.in":     []byte("1\n"),
+		"1.out":    []byte("ok\n"),
+	}
+	fake := &sandbox.Fake{ExecFn: func(_ context.Context, spec sandbox.Spec) sandbox.Result {
+		if spec.Role == sandbox.RoleCompile {
+			compiles.Add(1)
+			return compileOK(spec)
+		}
+		if spec.Role == sandbox.RoleUser {
+			return sandbox.Result{Status: sandbox.StatusOK, Stdout: []byte("ok\n")}
+		}
+		return sandbox.Result{Status: sandbox.StatusOK}
+	}}
+	cfg := `{
+		"version": 1,
+		"kind": "batch",
+		"checker": {"kind": "testlib", "source_name": "chk.cpp"},
+		"time_limit_ms": 1000,
+		"memory_limit_bytes": 67108864,
+		"subtasks": [{"id": "s1", "score": "100.00", "case_ids": ["1"]}],
+		"cases": [{"id": "1", "input_name": "1.in", "output_name": "1.out"}]
+	}`
+	d := dispatch(t, files, []string{"chk.cpp", "1.in", "1.out"}, cfg)
+	got := testRunner(t, fake).Run(context.Background(), d)
+	if got == nil || got.SystemFault {
+		t.Fatalf("result %+v", got)
+	}
+	if compiles.Load() < 2 {
+		t.Fatalf("user and checker compiles mixed into one cache entry, compiles=%d", compiles.Load())
+	}
+}
+
+func TestCompileCacheKeyIncludesFilename(t *testing.T) {
+	t.Parallel()
+	src := []byte("int main(){return 0;}\n")
+	a := compileCacheKey(sandbox.RoleUser, profileCPP23, "program", []string{"g++", "main.cpp"}, map[string][]byte{"main.cpp": src})
+	b := compileCacheKey(sandbox.RoleUser, profileCPP23, "program", []string{"g++", "other.cpp"}, map[string][]byte{"other.cpp": src})
+	if a == b {
+		t.Fatal("same source under different names must not share a cache key")
+	}
+	c := compileCacheKey(sandbox.RoleChecker, profileCPP23, "program", []string{"g++", "main.cpp"}, map[string][]byte{"main.cpp": src})
+	if a == c {
+		t.Fatal("user and checker roles must not share a cache key")
+	}
+}
+
+func TestMissingTestlibIsFault(t *testing.T) {
+	t.Parallel()
+	fake, d := checkerCrashSetup(t)
+	r := testRunner(t, fake)
+	r.testlibPath = filepath.Join(r.workDir, "missing-testlib.h")
+	got := r.Run(context.Background(), d)
+	if got == nil || !got.SystemFault || got.SystemFaultKind != faultMissingTestlib {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestFetchTaskBudget(t *testing.T) {
+	t.Parallel()
+	fake, d := tokenACSetup(t)
+	r := testRunner(t, fake)
+	r.maxTaskBytes = 1
+	got := r.Run(context.Background(), d)
+	if got == nil || !got.SystemFault || got.SystemFaultKind != faultTaskTooLarge {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestNormalizedConfigFixture(t *testing.T) {
+	t.Parallel()
+	raw, err := os.ReadFile(filepath.Join("testdata", "normalized_config_v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := parseConfig(string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Version != 1 || cfg.Kind != kindBatch || cfg.Checker.Kind != checkerToken {
+		t.Fatalf("%+v", cfg)
+	}
+}
+
+func TestProfileIDsCatalog(t *testing.T) {
+	t.Parallel()
+	ids := ProfileIDs()
+	if len(ids) != 3 {
+		t.Fatalf("%v", ids)
+	}
+	if AdvertiseProfiles() == nil {
+		t.Fatal("AdvertiseProfiles must return a slice")
+	}
 }

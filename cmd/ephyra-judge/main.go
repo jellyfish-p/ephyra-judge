@@ -19,7 +19,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	opts.ExecutionProfileIDs = attempt.ProfileIDs()
+	ids := attempt.AdvertiseProfiles()
+	if len(ids) == 0 {
+		log.Fatal("no execution profile passed toolchain self-check")
+	}
+	opts.ExecutionProfileIDs = ids
 	runner := attempt.New(sandbox.DefaultHost(), opts.WorkDir)
 	opts.Judge = runner.Run
 	if err := node.Run(ctx, opts); err != nil {

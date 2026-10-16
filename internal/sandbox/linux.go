@@ -8,11 +8,15 @@ import (
 	"io"
 	"os"
 	"path"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/criyle/go-sandbox/container"
+	"github.com/criyle/go-sandbox/pkg/cgroup"
+	"github.com/criyle/go-sandbox/pkg/mount"
 	"github.com/criyle/go-sandbox/pkg/rlimit"
+	"github.com/criyle/go-sandbox/pkg/seccomp"
 	"github.com/criyle/go-sandbox/runner"
 	"golang.org/x/sys/unix"
 )
@@ -24,28 +28,47 @@ func init() {
 	}
 }
 
-func DefaultHost() Host { return linuxHost{} }
+func DefaultHost() Host {
+	return &linuxHost{
+		seccomp: buildSeccomp(),
+		cgRoot:  tryCgroupRoot(),
+	}
+}
 
-type linuxHost struct{}
+type linuxHost struct {
+	seccomp seccomp.Filter
+	cgRoot  cgroup.Cgroup
+}
 
-func (linuxHost) NewSession(ctx context.Context) (Session, error) {
+func (h *linuxHost) NewSession(ctx context.Context) (Session, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	env, err := newEnv()
+	env, err := newEnv(h.seccomp)
 	if err != nil {
 		return nil, err
 	}
-	return &linuxSession{env: env}, nil
+	return &linuxSession{host: h, env: env}, nil
 }
 
 type linuxSession struct {
-	env container.Environment
+	host *linuxHost
+	env  container.Environment
 }
 
-func newEnv() (container.Environment, error) {
+func newEnv(filter seccomp.Filter) (container.Environment, error) {
+	mt := mount.NewDefaultBuilder().
+		WithProc().
+		WithBind("/etc", "etc", true).
+		WithBind("/dev/null", "dev/null", false).
+		WithBind("/dev/urandom", "dev/urandom", true).
+		WithTmpfs("w", "").
+		WithTmpfs("tmp", "").
+		FilterNotExist().Mounts
 	b := &container.Builder{
 		WorkDir: "/w",
+		Mounts:  mt,
+		Seccomp: filter,
 	}
 	return b.Build()
 }
@@ -61,11 +84,11 @@ func (s *linuxSession) Exec(ctx context.Context, spec Spec) Result {
 	if err := s.env.Reset(); err != nil {
 		return Result{Status: StatusRunnerError, Error: err.Error()}
 	}
-	return execEnv(ctx, s.env, spec, nil)
+	return execEnv(ctx, s.host, s.env, spec, nil, nil)
 }
 
 func (s *linuxSession) ExecPair(ctx context.Context, user, peer Spec) (Result, Result) {
-	peerEnv, err := newEnv()
+	peerEnv, err := newEnv(s.host.seccomp)
 	if err != nil {
 		e := Result{Status: StatusRunnerError, Error: err.Error()}
 		return e, e
@@ -88,26 +111,37 @@ func (s *linuxSession) ExecPair(ctx context.Context, user, peer Spec) (Result, R
 		e := Result{Status: StatusRunnerError, Error: err.Error()}
 		return e, e
 	}
-	defer uIn.Close()
-	defer uOut.Close()
-	defer pIn.Close()
-	defer pOut.Close()
 
+	userStarted := make(chan struct{})
+	peerStarted := make(chan struct{})
 	type pair struct{ res Result }
 	uch := make(chan pair, 1)
 	pch := make(chan pair, 1)
 	go func() {
-		uch <- pair{execEnv(ctx, s.env, user, []*os.File{uIn, uOut})}
+		uch <- pair{execEnv(ctx, s.host, s.env, user, []*os.File{uIn, uOut}, func() { close(userStarted) })}
 	}()
 	go func() {
-		pch <- pair{execEnv(ctx, peerEnv, peer, []*os.File{pIn, pOut})}
+		pch <- pair{execEnv(ctx, s.host, peerEnv, peer, []*os.File{pIn, pOut}, func() { close(peerStarted) })}
 	}()
+	<-userStarted
+	<-peerStarted
+	uIn.Close()
+	uOut.Close()
+	pIn.Close()
+	pOut.Close()
 	ur := (<-uch).res
 	pr := (<-pch).res
 	return ur, pr
 }
 
-func execEnv(ctx context.Context, env container.Environment, spec Spec, stdio []*os.File) Result {
+func execEnv(ctx context.Context, host *linuxHost, env container.Environment, spec Spec, stdio []*os.File, onStarted func()) Result {
+	started := func() {}
+	if onStarted != nil {
+		var once sync.Once
+		started = func() { once.Do(onStarted) }
+	}
+	defer started()
+
 	if err := copyIn(env, spec.Files); err != nil {
 		return Result{Status: StatusRunnerError, Error: err.Error()}
 	}
@@ -150,6 +184,7 @@ func execEnv(ctx context.Context, env container.Environment, spec Spec, stdio []
 		return Result{Status: StatusRunnerError, Error: err.Error()}
 	}
 	defer closeFDs()
+	started()
 
 	wall := wallOrDefault(spec.Limits)
 	runCtx, cancel := context.WithTimeout(ctx, wall)
@@ -170,6 +205,7 @@ func execEnv(ctx context.Context, env container.Environment, spec Spec, stdio []
 		CPUHard:      cpuSec + 1,
 		AddressSpace: uint64(mem),
 		FileSize:     uint64(outLim),
+		OpenFile:     256,
 		DisableCore:  true,
 	}).PrepareRLimit()
 
@@ -178,13 +214,30 @@ func execEnv(ctx context.Context, env container.Environment, spec Spec, stdio []
 		envv = DefaultEnv()
 	}
 
+	var cg *cgHandle
+	if host != nil {
+		cg = host.prepareCgroup(spec)
+	}
+	var cgroupFD uintptr
+	var syncFunc func(pid int) error
+	if cg != nil {
+		defer cg.closer()
+		cgroupFD = cg.fd
+		syncFunc = cg.sync
+		go watchCPU(runCtx, cancel, cg.cg, spec.Limits.CPU)
+	}
+
+	param := container.ExecveParam{
+		Args:     spec.Args,
+		Env:      envv,
+		Files:    files,
+		RLimits:  rlimits,
+		CgroupFD: cgroupFD,
+		SyncFunc: syncFunc,
+	}
+
 	start := time.Now()
-	rr := env.Execve(runCtx, container.ExecveParam{
-		Args:    spec.Args,
-		Env:     envv,
-		Files:   files,
-		RLimits: rlimits,
-	})
+	rr := env.Execve(runCtx, param)
 	wallUsed := time.Since(start)
 
 	var outBytes []byte
@@ -360,6 +413,6 @@ func wallOrDefault(l Limits) time.Duration {
 }
 
 var (
-	_ Host    = linuxHost{}
+	_ Host    = (*linuxHost)(nil)
 	_ Session = (*linuxSession)(nil)
 )

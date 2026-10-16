@@ -3,8 +3,14 @@ package attempt
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,8 +18,10 @@ import (
 	judgev1 "github.com/jellyfish-p/ephyra/protocol/judge/v1"
 )
 
-func (r *Runner) compileCached(ctx context.Context, sess sandbox.Session, profileID, sourceSHA string, args []string, files map[string][]byte, outName string) (bin []byte, compilerFailed bool, faultKind string) {
-	cachePath := filepath.Join(r.workDir, "compile", profileID+"-"+sourceSHA)
+const maxCompileCache = 256
+
+func (r *Runner) compileCached(ctx context.Context, sess sandbox.Session, role sandbox.Role, profileID string, args []string, files map[string][]byte, outName string) (bin []byte, compilerFailed bool, faultKind string) {
+	cachePath := filepath.Join(r.workDir, "compile", compileCacheKey(role, profileID, outName, args, files))
 	if cached, err := os.ReadFile(cachePath); err == nil && len(cached) > 0 {
 		return cached, false, ""
 	}
@@ -35,10 +43,72 @@ func (r *Runner) compileCached(ctx context.Context, sess sandbox.Session, profil
 	if len(bin) == 0 {
 		return nil, true, ""
 	}
-	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err == nil {
-		_ = os.WriteFile(cachePath, bin, 0o644)
+	if err := atomicWriteFile(cachePath, bin, 0o644); err == nil {
+		pruneCompileCache(filepath.Dir(cachePath), maxCompileCache)
 	}
 	return bin, false, ""
+}
+
+func compileCacheKey(role sandbox.Role, profileID, outName string, args []string, files map[string][]byte) string {
+	h := sha256.New()
+	write := func(s string) {
+		var n [4]byte
+		binary.BigEndian.PutUint32(n[:], uint32(len(s)))
+		h.Write(n[:])
+		_, _ = io.WriteString(h, s)
+	}
+	write(string(role))
+	write(profileID)
+	write(outName)
+	write(strconv.Itoa(len(args)))
+	for _, a := range args {
+		write(a)
+	}
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	write(strconv.Itoa(len(names)))
+	for _, name := range names {
+		write(name)
+		sum := sha256.Sum256(files[name])
+		h.Write(sum[:])
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func pruneCompileCache(dir string, max int) {
+	if max <= 0 {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) <= max {
+		return
+	}
+	type item struct {
+		name string
+		mod  time.Time
+	}
+	items := make([]item, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		items = append(items, item{name: e.Name(), mod: info.ModTime()})
+	}
+	if len(items) <= max {
+		return
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].mod.Before(items[j].mod) })
+	drop := len(items) - max*3/4
+	for i := 0; i < drop; i++ {
+		_ = os.Remove(filepath.Join(dir, items[i].name))
+	}
 }
 
 func compileLimits() sandbox.Limits {
@@ -47,6 +117,7 @@ func compileLimits() sandbox.Limits {
 		Wall:        45 * time.Second,
 		MemoryBytes: 512 << 20,
 		OutputBytes: 64 << 20,
+		Processes:   64,
 	}
 }
 
@@ -61,12 +132,14 @@ func runCase(ctx context.Context, sess sandbox.Session, d *judgev1.DispatchAttem
 		Wall:        time.Duration(timeLim)*time.Millisecond*2 + 200*time.Millisecond,
 		MemoryBytes: memLim,
 		OutputBytes: 64 << 20,
+		Processes:   16,
 	}
 	auxLim := sandbox.Limits{
 		CPU:         userLim.CPU * 2,
 		Wall:        userLim.Wall * 2,
 		MemoryBytes: memLim,
 		OutputBytes: 16 << 20,
+		Processes:   32,
 	}
 	if cfg.Kind == kindInteractive {
 		return runInteractive(ctx, sess, prof, userBin, interBin, in, userLim, auxLim, cs.ID)

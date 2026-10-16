@@ -19,6 +19,7 @@ type Limits struct {
 	Wall        time.Duration
 	MemoryBytes int64
 	OutputBytes int64
+	Processes   int64
 }
 
 type Spec struct {

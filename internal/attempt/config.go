@@ -5,6 +5,9 @@ import (
 	"fmt"
 )
 
+// configVersion is the normalized_config_json contract. Keep the sample
+// testdata/normalized_config_v1.json identical to
+// ephyra/protocol/testdata/normalized_config_v1.json.
 const configVersion = 1
 
 type normalizedConfig struct {

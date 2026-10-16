@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,6 +36,8 @@ type fakeControl struct {
 	outbound   chan *judgev1.ServerMessage
 	ready      chan struct{}
 	readyOnce  sync.Once
+	drops      chan struct{}
+	conns      int32
 }
 
 func newFake(accept bool, reject string) *fakeControl {
@@ -42,7 +45,7 @@ func newFake(accept bool, reject string) *fakeControl {
 		accept:     accept,
 		reject:     reject,
 		intervalMS: 40,
-		handshake:  make(chan *judgev1.HandshakeRequest, 1),
+		handshake:  make(chan *judgev1.HandshakeRequest, 8),
 		results:    make(chan *judgev1.AttemptResult, 8),
 		heartbeats: make(chan *judgev1.Heartbeat, 64),
 		outbound:   make(chan *judgev1.ServerMessage, 16),
@@ -51,6 +54,7 @@ func newFake(accept bool, reject string) *fakeControl {
 }
 
 func (f *fakeControl) Connect(stream judgev1.JudgeControl_ConnectServer) error {
+	connN := atomic.AddInt32(&f.conns, 1)
 	msg, err := stream.Recv()
 	if err != nil {
 		return err
@@ -80,6 +84,10 @@ func (f *fakeControl) Connect(stream judgev1.JudgeControl_ConnectServer) error {
 	f.readyOnce.Do(func() { close(f.ready) })
 
 	ctx := stream.Context()
+	var drop <-chan struct{}
+	if connN == 1 && f.drops != nil {
+		drop = f.drops
+	}
 	recvErr := make(chan error, 1)
 	go func() {
 		for {
@@ -112,6 +120,8 @@ func (f *fakeControl) Connect(stream judgev1.JudgeControl_ConnectServer) error {
 			if err := stream.Send(m); err != nil {
 				return err
 			}
+		case <-drop:
+			return errors.New("test disconnect")
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -154,7 +164,7 @@ func testOpts(t *testing.T, fake *fakeControl, judge JudgeFunc) Options {
 		Addr:       "passthrough:///bufnet",
 		NodeID:     "node-1",
 		Credential: testCredential,
-		WorkDir:    "work",
+		WorkDir:    t.TempDir(),
 		Insecure:   true,
 		MaxSlots:   1,
 		Judge:      judge,
@@ -176,6 +186,7 @@ func waitReady(t *testing.T, fake *fakeControl) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("timeout waiting for handshake")
 	}
+	waitHeartbeat(t, fake, 3*time.Second, func(*judgev1.Heartbeat) bool { return true })
 }
 
 func startRun(t *testing.T, opts Options) context.CancelFunc {
@@ -480,6 +491,87 @@ func TestRunHeartbeatWhileJudgeBlocks(t *testing.T) {
 			}
 			return
 		}
+	}
+}
+
+func TestRunDuplicateDispatchDoesNotRerun(t *testing.T) {
+	var n atomic.Int32
+	fake := newFake(true, "")
+	opts := testOpts(t, fake, func(_ context.Context, d *judgev1.DispatchAttempt) *judgev1.AttemptResult {
+		n.Add(1)
+		return &judgev1.AttemptResult{
+			AttemptId:  d.GetAttemptId(),
+			Generation: d.GetGeneration(),
+			Verdict:    "accepted",
+			Score:      "100.00",
+		}
+	})
+	startRun(t, opts)
+	waitReady(t, fake)
+
+	d := &judgev1.DispatchAttempt{AttemptId: "att-dup", Generation: 1}
+	fake.dispatch(d)
+	first := waitResult(t, fake, 3*time.Second)
+	if first.GetAttemptId() != "att-dup" {
+		t.Fatalf("first %+v", first)
+	}
+	fake.dispatch(d)
+	second := waitResult(t, fake, 3*time.Second)
+	if second.GetAttemptId() != "att-dup" {
+		t.Fatalf("second %+v", second)
+	}
+	if n.Load() != 1 {
+		t.Fatalf("judge calls = %d", n.Load())
+	}
+}
+
+func TestRunReconnectDoesNotCancelRunning(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var n atomic.Int32
+	fake := newFake(true, "")
+	fake.drops = make(chan struct{})
+	opts := testOpts(t, fake, func(ctx context.Context, d *judgev1.DispatchAttempt) *judgev1.AttemptResult {
+		n.Add(1)
+		close(started)
+		select {
+		case <-release:
+			return &judgev1.AttemptResult{AttemptId: d.GetAttemptId(), Generation: d.GetGeneration(), Verdict: "accepted", Score: "100.00"}
+		case <-ctx.Done():
+			return nil
+		}
+	})
+	startRun(t, opts)
+	waitReady(t, fake)
+	select {
+	case <-fake.handshake:
+	case <-time.After(3 * time.Second):
+		t.Fatal("missing first handshake")
+	}
+
+	fake.dispatch(&judgev1.DispatchAttempt{AttemptId: "att-re", Generation: 1})
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("judge did not start")
+	}
+	close(fake.drops)
+
+	select {
+	case hs := <-fake.handshake:
+		if hs.GetNodeId() != "node-1" {
+			t.Fatalf("reconnect handshake %+v", hs)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("did not reconnect")
+	}
+	close(release)
+	res := waitResult(t, fake, 3*time.Second)
+	if res.GetAttemptId() != "att-re" || res.GetVerdict() != "accepted" {
+		t.Fatalf("result %+v", res)
+	}
+	if n.Load() != 1 {
+		t.Fatalf("judge calls = %d", n.Load())
 	}
 }
 

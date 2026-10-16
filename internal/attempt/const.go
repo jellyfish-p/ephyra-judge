@@ -33,7 +33,11 @@ const (
 	faultSandboxUnavailable = "sandbox_unavailable"
 	faultSandboxExec        = "sandbox_exec"
 	faultMissingFile        = "missing_file"
+	faultMissingTestlib     = "missing_testlib"
+	faultTaskTooLarge       = "task_data_too_large"
 	faultInternal           = "internal"
 
-	maxFileBytes = 64 << 20
+	maxFileBytes   = 64 << 20
+	maxTaskBytes   = 256 << 20
+	defaultTestlib = "/usr/include/testlib.h"
 )

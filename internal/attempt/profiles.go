@@ -1,6 +1,13 @@
 package attempt
 
-import "path"
+import (
+	"context"
+	"io"
+	"os/exec"
+	"path"
+	"strings"
+	"time"
+)
 
 const (
 	profileCPP23 = "cpp23.gcc.linux-amd64.v0"
@@ -13,9 +20,26 @@ type profile struct {
 	compileArgs, runArgs       []string
 }
 
-// ProfileIDs returns the execution profile IDs lookupProfile knows.
+// ProfileIDs returns the catalog of execution profile IDs. AdvertiseProfiles
+// is what a live node should send: only IDs whose compiler passed self-check.
 func ProfileIDs() []string {
 	return []string{profileCPP23, profileC17, profileC23}
+}
+
+// AdvertiseProfiles probes gcc/g++ and returns the subset of ProfileIDs that
+// can compile a trivial translation unit with the profile's -std flag.
+func AdvertiseProfiles() []string {
+	var out []string
+	for _, id := range ProfileIDs() {
+		p, ok := lookupProfile(id)
+		if !ok {
+			continue
+		}
+		if probeProfile(p) {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 func lookupProfile(id string) (profile, bool) {
@@ -45,4 +69,39 @@ func lookupProfile(id string) (profile, bool) {
 
 func toolCompileArgs(srcName, outName string) []string {
 	return []string{"g++", "-std=c++23", "-O2", "-pipe", "-o", outName, path.Base(srcName)}
+}
+
+func probeProfile(p profile) bool {
+	if len(p.compileArgs) == 0 {
+		return false
+	}
+	bin, err := exec.LookPath(p.compileArgs[0])
+	if err != nil {
+		return false
+	}
+	std := stdFlag(p.compileArgs)
+	lang := "c"
+	if strings.HasPrefix(p.languageID, "cpp") {
+		lang = "c++"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	args := []string{"-fsyntax-only", "-x", lang, "-"}
+	if std != "" {
+		args = append([]string{std}, args...)
+	}
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Stdin = strings.NewReader("int main(void){return 0;}\n")
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	return cmd.Run() == nil
+}
+
+func stdFlag(args []string) string {
+	for _, a := range args {
+		if strings.HasPrefix(a, "-std=") {
+			return a
+		}
+	}
+	return ""
 }

@@ -11,10 +11,17 @@ Third-party notices
 go-sandbox
 https://github.com/criyle/go-sandbox
 License: MIT
-Used as a Linux isolation library (namespaces, rlimit, preforked container).
-Ephyra owns compile/check/score orchestration; go-sandbox does not decide
-accepted / wrong_answer. Isolation effectiveness is not claimed until a
-recorded Linux host validation exists.
+Used as a Linux isolation library (namespaces, rlimit, cgroup, seccomp,
+preforked container). Ephyra owns compile/check/score orchestration;
+go-sandbox does not decide accepted / wrong_answer. Isolation effectiveness
+is not claimed until a recorded Linux host validation exists.
+
+testlib
+https://github.com/MikeMirzayanov/testlib
+License: MIT
+Pinned release 0.9.41 is downloaded into the judge image as
+`/usr/include/testlib.h` for checker and interactor compilation. Problem
+packages may also ship `testlib.h`; that file wins when present.
 
 gRPC, protobuf, and other Go module licenses appear in their respective
 module trees via `go.mod`.

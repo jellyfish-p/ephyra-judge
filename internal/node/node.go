@@ -97,20 +97,26 @@ func FromEnv() (Options, error) {
 }
 
 // Run dials JudgeControl and serves the stream until ctx is cancelled.
-// Stream errors reconnect with capped exponential backoff. A rejected
+// Stream errors reconnect with capped exponential backoff; running attempts
+// and unsent results stay with the process, not the connection. A rejected
 // handshake returns an error that includes reject_reason.
 func Run(ctx context.Context, opts Options) error {
 	opts, err := normalize(opts)
 	if err != nil {
 		return err
 	}
+	rt, err := newRuntime(ctx, opts)
+	if err != nil {
+		return err
+	}
+	defer rt.shutdown()
 	backoff := minReconnectWait
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil
 		}
 		slog.Info("connecting to judge control", "addr", opts.Addr, "node_id", opts.NodeID)
-		handed, err := connectOnce(ctx, opts)
+		handed, err := connectOnce(ctx, opts, rt)
 		if ctx.Err() != nil {
 			return nil
 		}

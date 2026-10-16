@@ -3,7 +3,9 @@ package attempt
 import (
 	"context"
 	"net/http"
+	"os"
 	"path"
+	"strings"
 
 	"github.com/jellyfish-p/ephyra-judge/internal/sandbox"
 	judgev1 "github.com/jellyfish-p/ephyra/protocol/judge/v1"
@@ -11,13 +13,24 @@ import (
 
 // Runner is the judging brain. Callers only see Run.
 type Runner struct {
-	sandbox sandbox.Host
-	workDir string
-	http    *http.Client // nil → http.DefaultClient
+	sandbox      sandbox.Host
+	workDir      string
+	http         *http.Client
+	maxTaskBytes int64
+	testlibPath  string
 }
 
 func New(host sandbox.Host, workDir string) *Runner {
-	return &Runner{sandbox: host, workDir: workDir}
+	testlib := strings.TrimSpace(os.Getenv("EPHYRA_JUDGE_TESTLIB"))
+	if testlib == "" {
+		testlib = defaultTestlib
+	}
+	return &Runner{
+		sandbox:     host,
+		workDir:     workDir,
+		http:        &http.Client{Timeout: downloadTimeout},
+		testlibPath: testlib,
+	}
 }
 
 // Run judges one dispatch. A cancelled or invalidated attempt returns nil
@@ -66,7 +79,7 @@ func (r *Runner) Run(ctx context.Context, d *judgev1.DispatchAttempt) *judgev1.A
 	}
 	defer sess.Close()
 
-	userBin, compilerFailed, kind := r.compileCached(ctx, sess, prof.id, shaHex(source), prof.compileArgs, map[string][]byte{
+	userBin, compilerFailed, kind := r.compileCached(ctx, sess, sandbox.RoleUser, prof.id, prof.compileArgs, map[string][]byte{
 		prof.sourceName: source,
 	}, "program")
 	if ctx.Err() != nil {
@@ -85,9 +98,11 @@ func (r *Runner) Run(ctx context.Context, d *judgev1.DispatchAttempt) *judgev1.A
 		if !ok {
 			return systemFault(d, faultMissingFile)
 		}
-		bin, failed, kind := r.compileCached(ctx, sess, profileCPP23, shaHex(src), toolCompileArgs(cfg.Checker.SourceName, "checker"), map[string][]byte{
-			path.Base(cfg.Checker.SourceName): src,
-		}, "checker")
+		files, kind := r.toolFiles(cfg.Checker.SourceName, src, data)
+		if kind != "" {
+			return systemFault(d, kind)
+		}
+		bin, failed, kind := r.compileCached(ctx, sess, sandbox.RoleChecker, profileCPP23, toolCompileArgs(cfg.Checker.SourceName, "checker"), files, "checker")
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -106,9 +121,11 @@ func (r *Runner) Run(ctx context.Context, d *judgev1.DispatchAttempt) *judgev1.A
 		if !ok {
 			return systemFault(d, faultMissingFile)
 		}
-		bin, failed, kind := r.compileCached(ctx, sess, profileCPP23, shaHex(src), toolCompileArgs(cfg.Interactor.SourceName, "interactor"), map[string][]byte{
-			path.Base(cfg.Interactor.SourceName): src,
-		}, "interactor")
+		files, kind := r.toolFiles(cfg.Interactor.SourceName, src, data)
+		if kind != "" {
+			return systemFault(d, kind)
+		}
+		bin, failed, kind := r.compileCached(ctx, sess, sandbox.RoleInteractor, profileCPP23, toolCompileArgs(cfg.Interactor.SourceName, "interactor"), files, "interactor")
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -151,6 +168,21 @@ func (r *Runner) Run(ctx context.Context, d *judgev1.DispatchAttempt) *judgev1.A
 	res.TimeMs = maxTime
 	res.MemoryBytes = maxMem
 	return res
+}
+
+func (r *Runner) toolFiles(srcName string, src []byte, data map[string][]byte) (map[string][]byte, string) {
+	files := map[string][]byte{path.Base(srcName): src}
+	if hdr, ok := data["testlib.h"]; ok && len(hdr) > 0 {
+		files["testlib.h"] = hdr
+		return files, ""
+	}
+	if r.testlibPath != "" {
+		if hdr, err := os.ReadFile(r.testlibPath); err == nil && len(hdr) > 0 {
+			files["testlib.h"] = hdr
+			return files, ""
+		}
+	}
+	return nil, faultMissingTestlib
 }
 
 func identity(d *judgev1.DispatchAttempt) *judgev1.AttemptResult {

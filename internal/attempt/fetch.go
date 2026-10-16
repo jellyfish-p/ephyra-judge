@@ -10,23 +10,44 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	judgev1 "github.com/jellyfish-p/ephyra/protocol/judge/v1"
 )
+
+const downloadTimeout = 30 * time.Second
 
 func (r *Runner) client() *http.Client {
 	if r.http != nil {
 		return r.http
 	}
-	return http.DefaultClient
+	return &http.Client{Timeout: downloadTimeout}
+}
+
+func (r *Runner) taskBudget() int64 {
+	if r.maxTaskBytes > 0 {
+		return r.maxTaskBytes
+	}
+	return maxTaskBytes
 }
 
 func (r *Runner) fetchData(ctx context.Context, files []*judgev1.FileRef) (map[string][]byte, string) {
-	out := make(map[string][]byte, len(files))
+	var claimed int64
 	for _, f := range files {
 		if f == nil {
 			return nil, faultMissingFile
 		}
+		if f.GetSizeBytes() > maxFileBytes {
+			return nil, faultFileTooLarge
+		}
+		claimed += f.GetSizeBytes()
+		if claimed > r.taskBudget() {
+			return nil, faultTaskTooLarge
+		}
+	}
+	out := make(map[string][]byte, len(files))
+	var total int64
+	for _, f := range files {
 		key, kind := dataKey(f.GetName())
 		if kind != "" {
 			return nil, kind
@@ -34,6 +55,10 @@ func (r *Runner) fetchData(ctx context.Context, files []*judgev1.FileRef) (map[s
 		body, kind := r.fetch(ctx, f)
 		if kind != "" {
 			return nil, kind
+		}
+		total += int64(len(body))
+		if total > r.taskBudget() {
+			return nil, faultTaskTooLarge
 		}
 		out[key] = body
 	}
@@ -83,9 +108,7 @@ func (r *Runner) fetch(ctx context.Context, ref *judgev1.FileRef) ([]byte, strin
 	if kind := verifyBlob(body, ref); kind != "" {
 		return nil, kind
 	}
-	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err == nil {
-		_ = os.WriteFile(cachePath, body, 0o644)
-	}
+	_ = atomicWriteFile(cachePath, body, 0o644)
 	return body, ""
 }
 
@@ -124,9 +147,4 @@ func dataKey(name string) (string, string) {
 
 func baseFileName(name string) string {
 	return path.Base(strings.ReplaceAll(name, "\\", "/"))
-}
-
-func shaHex(b []byte) string {
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
 }
